@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>ASL Alphabet Recognizer</title>
+
+    <link
+        rel="stylesheet"
+        href="styles.css"
+    >
+
+</head>
+
+<body>
+
+<div class="container">
+
+    <header>
+
+        <h1>ASL Alphabet Recognizer</h1>
+
+        <p>
+            Upload or take a photo of an ASL hand sign.
+        </p>
+
+    </header>
+
+
+    <section class="upload-card">
+
+        <input
+            id="imageInput"
+            type="file"
+            accept="image/*"
+            capture="environment"
+        >
+
+        <button
+            id="predictButton"
+            disabled
+        >
+            Recognize Sign
+        </button>
+
+        <div
+            id="status"
+            class="status"
+        ></div>
+
+    </section>
+
+
+    <section
+        id="results"
+        class="results hidden"
+    >
+
+        <div class="overall">
+
+            <h2>Predictions</h2>
+
+        </div>
+
+
+        <div class="model-grid">
+
+            <!-- RAW -->
+
+            <article class="model-card">
+
+                <h3>Raw RGB</h3>
+
+                <img
+                    id="rawImage"
+                    class="processed-image"
+                    alt="Raw image"
+                >
+
+                <div
+                    id="rawPrediction"
+                    class="prediction"
+                ></div>
+
+                <div
+                    id="rawTop3"
+                    class="top3"
+                ></div>
+
+            </article>
+
+
+            <!-- FILTERED -->
+
+            <article class="model-card">
+
+                <h3>Gaussian Filtered</h3>
+
+                <img
+                    id="filteredImage"
+                    class="processed-image"
+                    alt="Gaussian filtered image"
+                >
+
+                <div
+                    id="filteredPrediction"
+                    class="prediction"
+                ></div>
+
+                <div
+                    id="filteredTop3"
+                    class="top3"
+                ></div>
+
+            </article>
+
+
+            <!-- EDGES -->
+
+            <article class="model-card">
+
+                <h3>Canny Edges</h3>
+
+                <img
+                    id="edgesImage"
+                    class="processed-image"
+                    alt="Canny edge image"
+                >
+
+                <div
+                    id="edgesPrediction"
+                    class="prediction"
+                ></div>
+
+                <div
+                    id="edgesTop3"
+                    class="top3"
+                ></div>
+
+            </article>
+
+        </div>
+
+    </section>
+
+</div>
+
+
+<script src="app.js"></script>
+
+</body>
+
+</html>

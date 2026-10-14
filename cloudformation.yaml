@@ -1,0 +1,617 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  ASL Alphabet Recognition serverless web application.
+  CloudFront + S3 + API Gateway + Lambda + SageMaker Serverless.
+
+Parameters:
+
+  ProjectName:
+    Type: String
+    Default: asl-recognizer
+
+  ModelS3Uri:
+    Type: String
+    Description: >
+      S3 URI of asl-models.tar.gz
+
+  SageMakerImageUri:
+    Type: String
+    Description: >
+      ECR URI of SageMaker inference image
+
+  LambdaImageUri:
+    Type: String
+    Description: >
+      ECR URI of Lambda preprocessing image
+
+  SageMakerMemory:
+    Type: Number
+    Default: 3072
+    AllowedValues:
+      - 1024
+      - 2048
+      - 3072
+      - 4096
+      - 5120
+      - 6144
+
+  SageMakerMaxConcurrency:
+    Type: Number
+    Default: 1
+
+
+Resources:
+
+  ###########################################################
+  # S3 FRONTEND
+  ###########################################################
+
+  FrontendBucket:
+
+    Type: AWS::S3::Bucket
+
+    Properties:
+
+      BucketEncryption:
+
+        ServerSideEncryptionConfiguration:
+
+          - ServerSideEncryptionByDefault:
+
+              SSEAlgorithm: AES256
+
+
+      PublicAccessBlockConfiguration:
+
+        BlockPublicAcls: true
+
+        BlockPublicPolicy: true
+
+        IgnorePublicAcls: true
+
+        RestrictPublicBuckets: true
+
+
+      OwnershipControls:
+
+        Rules:
+
+          - ObjectOwnership:
+              BucketOwnerEnforced
+
+
+  ###########################################################
+  # CLOUDFRONT OAC
+  ###########################################################
+
+  CloudFrontOAC:
+
+    Type: AWS::CloudFront::OriginAccessControl
+
+    Properties:
+
+      OriginAccessControlConfig:
+
+        Name:
+          !Sub '${ProjectName}-oac'
+
+        Description:
+          S3 access through CloudFront
+
+        OriginAccessControlOriginType:
+          s3
+
+        SigningBehavior:
+          always
+
+        SigningProtocol:
+          sigv4
+
+
+  ###########################################################
+  # SAGEMAKER IAM ROLE
+  ###########################################################
+
+  SageMakerExecutionRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service:
+                - sagemaker.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+
+      ManagedPolicyArns:
+
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+
+
+  ###########################################################
+  # SAGEMAKER MODEL
+  ###########################################################
+
+  SageMakerModel:
+
+    Type: AWS::SageMaker::Model
+
+    Properties:
+
+      ExecutionRoleArn:
+        !GetAtt SageMakerExecutionRole.Arn
+
+
+      PrimaryContainer:
+
+        Image:
+          !Ref SageMakerImageUri
+
+        ModelDataUrl:
+          !Ref ModelS3Uri
+
+
+  ###########################################################
+  # SAGEMAKER SERVERLESS CONFIG
+  ###########################################################
+
+  SageMakerEndpointConfig:
+
+    Type: AWS::SageMaker::EndpointConfig
+
+    Properties:
+
+      EndpointConfigName: !Sub "${AWS::StackName}-ep-config"
+
+      ProductionVariants:
+
+        - VariantName: Serverless
+
+          ModelName:
+            !GetAtt SageMakerModel.ModelName
+
+          InitialVariantWeight:
+            1.0
+
+          ServerlessConfig:
+
+            MemorySizeInMB:
+              !Ref SageMakerMemory
+
+            MaxConcurrency:
+              !Ref SageMakerMaxConcurrency
+
+
+  ###########################################################
+  # SAGEMAKER ENDPOINT
+  ###########################################################
+
+  SageMakerEndpoint:
+
+    Type: AWS::SageMaker::Endpoint
+
+    Properties:
+
+      EndpointConfigName:
+        !GetAtt SageMakerEndpointConfig.EndpointConfigName
+
+
+  ###########################################################
+  # LAMBDA IAM ROLE
+  ###########################################################
+
+  LambdaExecutionRole:
+
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+
+      Policies:
+
+        - PolicyName:
+            !Sub '${ProjectName}-lambda-policy'
+
+          PolicyDocument:
+
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Effect: Allow
+
+                Action:
+
+                  - logs:CreateLogGroup
+
+                  - logs:CreateLogStream
+
+                  - logs:PutLogEvents
+
+                Resource: '*'
+
+
+              - Effect: Allow
+
+                Action:
+
+                  - sagemaker:InvokeEndpoint
+
+                Resource: !Sub 'arn:aws:sagemaker:${AWS::Region}:${AWS::AccountId}:endpoint/*'
+
+
+  ###########################################################
+  # LAMBDA
+  ###########################################################
+
+  PredictionLambda:
+
+    Type: AWS::Lambda::Function
+
+    Properties:
+
+      PackageType: Image
+
+      Code:
+
+        ImageUri:
+          !Ref LambdaImageUri
+
+      Role:
+        !GetAtt LambdaExecutionRole.Arn
+
+      MemorySize:
+        2048
+
+      Timeout:
+        30
+
+      Environment:
+
+        Variables:
+
+          SAGEMAKER_ENDPOINT:
+            !GetAtt SageMakerEndpoint.EndpointName
+
+
+  ###########################################################
+  # API GATEWAY HTTP API
+  ###########################################################
+
+  PredictionApi:
+
+    Type: AWS::ApiGatewayV2::Api
+
+    Properties:
+
+      Name:
+        !Sub '${ProjectName}-api'
+
+      ProtocolType:
+        HTTP
+
+
+  ###########################################################
+  # API INTEGRATION
+  ###########################################################
+
+  PredictionIntegration:
+
+    Type: AWS::ApiGatewayV2::Integration
+
+    Properties:
+
+      ApiId:
+        !Ref PredictionApi
+
+      IntegrationType:
+        AWS_PROXY
+
+      IntegrationUri:
+        !GetAtt PredictionLambda.Arn
+
+      PayloadFormatVersion:
+        '2.0'
+
+
+  ###########################################################
+  # API ROUTE
+  ###########################################################
+
+  PredictionRoute:
+
+    Type: AWS::ApiGatewayV2::Route
+
+    Properties:
+
+      ApiId:
+        !Ref PredictionApi
+
+      RouteKey:
+        'POST /api/predict'
+
+      Target:
+        !Sub
+          'integrations/${PredictionIntegration}'
+
+
+  ###########################################################
+  # API STAGE
+  ###########################################################
+
+  PredictionStage:
+
+    Type: AWS::ApiGatewayV2::Stage
+
+    Properties:
+
+      ApiId:
+        !Ref PredictionApi
+
+      StageName:
+        '$default'
+
+      AutoDeploy:
+        true
+
+
+  ###########################################################
+  # LAMBDA PERMISSION
+  ###########################################################
+
+  LambdaApiPermission:
+
+    Type: AWS::Lambda::Permission
+
+    Properties:
+
+      Action:
+        lambda:InvokeFunction
+
+      FunctionName:
+        !Ref PredictionLambda
+
+      Principal:
+        apigateway.amazonaws.com
+
+      SourceArn:
+
+        !Sub
+          'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PredictionApi}/*/POST/api/predict'
+
+
+  ###########################################################
+  # CLOUDFRONT S3 BUCKET POLICY
+  ###########################################################
+
+  FrontendBucketPolicy:
+
+    Type: AWS::S3::BucketPolicy
+
+    Properties:
+
+      Bucket:
+        !Ref FrontendBucket
+
+      PolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Sid:
+              AllowCloudFrontRead
+
+            Effect:
+              Allow
+
+            Principal:
+
+              Service:
+                cloudfront.amazonaws.com
+
+            Action:
+              s3:GetObject
+
+            Resource:
+              !Sub '${FrontendBucket.Arn}/*'
+
+            Condition:
+
+              StringEquals:
+
+                AWS:SourceArn:
+
+                  !Sub
+                    'arn:aws:cloudfront::${AWS::AccountId}:distribution/${CloudFrontDistribution}'
+
+
+  ###########################################################
+  # CLOUDFRONT
+  ###########################################################
+
+  CloudFrontDistribution:
+
+    Type: AWS::CloudFront::Distribution
+
+    Properties:
+
+      DistributionConfig:
+
+        Enabled:
+          true
+
+        DefaultRootObject:
+          index.html
+
+
+        Origins:
+
+          ###################################################
+          # S3 ORIGIN
+          ###################################################
+
+          - Id:
+              FrontendS3Origin
+
+            DomainName:
+              !GetAtt FrontendBucket.RegionalDomainName
+
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+
+            OriginAccessControlId:
+              !GetAtt CloudFrontOAC.Id
+
+
+          ###################################################
+          # API GATEWAY ORIGIN
+          ###################################################
+
+          - Id:
+              PredictionApiOrigin
+
+            DomainName:
+              !Sub
+                '${PredictionApi}.execute-api.${AWS::Region}.amazonaws.com'
+
+            CustomOriginConfig:
+
+              HTTPSPort:
+                443
+
+              OriginProtocolPolicy:
+                https-only
+
+
+        #####################################################
+        # DEFAULT: S3
+        #####################################################
+
+        DefaultCacheBehavior:
+
+          TargetOriginId:
+            FrontendS3Origin
+
+          ViewerProtocolPolicy:
+            redirect-to-https
+
+          AllowedMethods:
+
+            - GET
+            - HEAD
+            - OPTIONS
+
+          CachedMethods:
+
+            - GET
+            - HEAD
+
+          CachePolicyId:
+            658327ea-f89d-4fab-a63d-7e88639e58f6
+
+
+        #####################################################
+        # API: /api/*
+        #####################################################
+
+        CacheBehaviors:
+
+          - PathPattern:
+              /api/*
+
+            TargetOriginId:
+              PredictionApiOrigin
+
+            ViewerProtocolPolicy:
+              redirect-to-https
+
+            AllowedMethods:
+
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+
+            CachedMethods:
+
+              - GET
+              - HEAD
+
+            CachePolicyId:
+              4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+
+            OriginRequestPolicyId:
+              b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+
+Outputs:
+
+  WebsiteURL:
+
+    Description:
+      CloudFront application URL
+
+    Value:
+      !Sub
+        'https://${CloudFrontDistribution.DomainName}'
+
+
+  FrontendBucket:
+
+    Description:
+      S3 bucket for frontend
+
+    Value:
+      !Ref FrontendBucket
+
+
+  SageMakerEndpoint:
+
+    Description:
+      SageMaker serverless endpoint
+
+    Value:
+      !Ref SageMakerEndpoint
+
+
+  ApiEndpoint:
+
+    Description:
+      Direct API Gateway endpoint
+
+    Value:
+      !GetAtt PredictionApi.ApiEndpoint
