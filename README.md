@@ -2,7 +2,7 @@
 
 ## [Part 1] ASL dataset + preprocessing 
 
-⚠️ **For the detailed step-by-step explanation, read the blog post on my website or on AWS Builder Center.**
+⚠️ **For the detailed step-by-step explanation, read the [blog post on my website](https://daryapetrashka.com/blog/cv-asl-part-1/) or on [AWS Builder Center](https://builder.aws.com/content/3KdiKzuB4nl91kM0DfQOvjgc81k/part-1-your-first-steps-in-computer-vision-on-aws-asl-dataset-preprocessing).**
 
 This is the first part of the series "Your first steps in Computer Vision on AWS". If you are just starting, this tutorial will guide you step by step from the initial dataset to a deployed app.
 
@@ -38,7 +38,7 @@ aws s3 sync ./asl_alphabet_train s3://your-bucket/raw/asl_alphabet_train/
 ### 3. Create SageMaker notebook instance
 
 Since we are not training any model yet (only processing 200x200 images one at a time), a bare CPU SageMaker notebook instance with additional disk space would be enough.
-I created an ```ml.t3.medium``` instance with 50 GB EBS.
+I created an `ml.t3.medium` instance with a 50 GB EBS volume:
 
 ⚠️ **Don't forget to stop and terminate your instance once the data is processed and uploaded to S3.** 
 
