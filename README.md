@@ -161,4 +161,205 @@ After running the notebook for 3 dataset versions (raw, Gaussian-filtered and Ca
 
 It turns out that the optimal performance (highest accuracy, lowest loss) was achieved using raw RGB images.
 
-## [Part 3] Deploy models to use in an ASL prediction app (to be continued...)
+## [Part 3] Deploying models to use in an ASL recognition app
+
+⚠️ **For the detailed step-by-step explanation, read the [blog post on my website](https://daryapetrashka.com/blog/cv-asl-part-3/), or on [Dev.to](https://dev.to/aws-builders/part-3-your-first-steps-in-computer-vision-on-aws-deploying-models-for-an-asl-recognition-app-14hf), or on [AWS Builder Center](https://builder.aws.com/content/3LjgdHCDGt7TIUEeb7Akq6LUzgi/part-3-your-first-steps-in-computer-vision-on-aws-deploying-models-for-an-asl-recognition-app).**
+
+This is the third and final part of the series "Your first steps in Computer Vision on AWS". If you are just starting, this tutorial will guide you step by step from the initial dataset to a deployed app.
+
+### 1. What we are trying to build
+
+While most ML tutorials end with model training and validation, we will take things one step further and deploy our models in an app.
+
+Here is what the AWS architecture will look like:
+
+![ASL recognition app reference architecture](images/asl-cv-app-architecture.png)
+
+The best way to test models is to take photos using a mobile phone. A simple static, serverless ASL Alphabet Recognition web application is hosted on S3 and accessed via a [CloudFront](https://aws.amazon.com/cloudfront/) URL. To call the models for predictions, we will use [API Gateway](https://aws.amazon.com/api-gateway/). A [Lambda event function](https://docs.aws.amazon.com/lambda/latest/dg/lambda-functions-chapter.html) will preprocess the uploaded photo and send it to a [serverless SageMaker inference endpoint](https://docs.aws.amazon.com/sagemaker/latest/dg/serverless-endpoints.html). The endpoint will be created using a container stored in [ECR](https://aws.amazon.com/ecr/). 
+
+Most of the AWS infrastructure will be created automatically using [CloudFormation](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/Welcome.html) (not shown on the architecture image). This will make the setup reproducible. However, we will first need to create the ECR repositories, build and push the SageMaker and Lambda container images, and upload the model archive to S3. The website files will also be uploaded to S3 manually after the stack is deployed.
+
+### 2. Prepare models for inference
+
+⚠️ For this step, you can use your local environment or a SageMaker notebook instance (`ml.t3.medium` is more than enough). 
+
+Models trained in the previous part are ready: put `raw.keras`, `filtered.keras`, and `edges.keras` into `models/`.
+You will also need to add the `class_names.json` file to the `models/` directory ([copy/download it from the current GitHub repo](https://github.com/dashapetr/Computer_Vision_ASL_AWS/blob/main/models/class_names.json)). 
+It contains the exact class mapping used during training.
+
+From inside `models/` directory run the command:
+
+```
+tar -czvf asl-models.tar.gz \
+    raw.keras \
+    filtered.keras \
+    edges.keras \
+    class_names.json
+```
+You will get the archive `asl-models.tar.gz`. Upload it to S3:
+
+```
+aws s3 cp asl-models.tar.gz \
+    s3://YOUR-BUCKET/asl-app/models/asl-models.tar.gz
+```
+
+⚠️ Don't forget to replace the placeholder `YOUR-BUCKET` and put your S3 bucket name!
+
+### 3. Build and push SageMaker inference container to ECR
+
+⚠️ For this step, you can use your local environment with AWS CLI ([How to install/update AWS CLI?](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)) or a SageMaker notebook instance (`ml.t3.medium` is more than enough). 
+
+⚠️ Copy/download `inference.py`, `requirements.txt`, and `Dockerfile` files from the [current GitHub repo](https://github.com/dashapetr/Computer_Vision_ASL_AWS/tree/main/sagemaker). They should sit inside the `sagemaker` directory (same structure as in the repo).
+
+Create an ECR repository and get your account ID:
+
+```
+aws ecr create-repository \
+    --repository-name asl-sagemaker-inference
+
+aws sts get-caller-identity \
+    --query Account \
+    --output text
+```
+
+Set variables and login:
+```
+export AWS_REGION=YOUR-REGION
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity \
+    --query Account \
+    --output text)
+
+export ECR_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+aws ecr get-login-password \
+    --region $AWS_REGION \
+    | docker login \
+    --username AWS \
+    --password-stdin $ECR_URI
+```
+Build, tag, and push:
+```
+cd sagemaker
+
+docker build \
+    -t asl-sagemaker-inference:latest .
+
+docker tag \
+    asl-sagemaker-inference:latest \
+    $ECR_URI/asl-sagemaker-inference:latest
+
+docker push \
+    $ECR_URI/asl-sagemaker-inference:latest
+```
+⚠️ Make sure that your role or identity has the required permissions to do the job. Required actions: `ecr:InitiateLayerUpload`, `ecr:UploadLayerPart`, `ecr:CompleteLayerUpload`, `ecr:BatchCheckLayerAvailability`, and `ecr:PutImage`.
+
+### 4. Build Lambda image
+
+⚠️ For this step, you can use your local environment with AWS CLI ([How to install/update AWS CLI?](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)) or a SageMaker notebook instance (`ml.t3.medium` is more than enough). 
+
+⚠️ Copy/download `lambda_function.py`, `requirements.txt`, and `Dockerfile` files from the [current GitHub repo](https://github.com/dashapetr/Computer_Vision_ASL_AWS/tree/main/lambda). They should sit inside the `lambda` directory (same structure as in the repo).
+
+Create a new ECR repository:
+```
+aws ecr create-repository \
+    --repository-name asl-preprocessing-lambda
+```
+Get your account ID, set variables, and login:
+```
+aws sts get-caller-identity \
+    --query Account \
+    --output text
+
+export AWS_REGION=YOUR-REGION
+export AWS_ACCOUNT_ID=$(aws sts get-caller-identity \
+    --query Account \
+    --output text)
+
+export ECR_URI=$AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+
+aws ecr get-login-password \
+    --region $AWS_REGION \
+    | docker login \
+    --username AWS \
+    --password-stdin $ECR_URI
+```
+Build, tag, and push:
+```
+cd lambda
+
+docker buildx build \
+    --platform linux/amd64 \
+    --provenance=false \
+    -t asl-preprocessing-lambda:latest \
+    .
+
+docker tag asl-preprocessing-lambda:latest \
+    $ECR_URI/asl-preprocessing-lambda:latest
+
+docker push $ECR_URI/asl-preprocessing-lambda:latest
+```
+
+### 5. Deploy the CloudFormation stack
+
+⚠️ For this step, you can use your local environment with AWS CLI ([How to install/update AWS CLI?](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)) or a SageMaker notebook instance (`ml.t3.medium` is more than enough). 
+
+⚠️ Copy/download the `cloudformation.yaml` file from the [current GitHub repo](https://github.com/dashapetr/Computer_Vision_ASL_AWS/blob/main/cloudformation.yaml).
+
+Before deploying the stack, you will need to retrieve three values:
+
+| Type            | Value                                                                |
+|-----------------|----------------------------------------------------------------------|
+| Model           | `s3://YOUR-BUCKET/asl-app/models/asl-models.tar.gz`                    |
+| SageMaker image | `ACCOUNT.dkr.ecr.REGION.amazonaws.com/asl-sagemaker-inference:latest`  | 
+| Lambda image    | `ACCOUNT.dkr.ecr.REGION.amazonaws.com/asl-preprocessing-lambda:latest` |
+
+Let's deploy the stack:
+```
+aws cloudformation deploy \
+    --template-file cloudformation.yaml \
+    --stack-name asl-recognizer \
+    --capabilities CAPABILITY_IAM \
+    --parameter-overrides \
+        ModelS3Uri=s3://YOUR-BUCKET/asl-app/models/asl-models.tar.gz \
+        SageMakerImageUri=ACCOUNT.dkr.ecr.REGION.amazonaws.com/asl-sagemaker-inference:latest \
+        LambdaImageUri=ACCOUNT.dkr.ecr.REGION.amazonaws.com/asl-preprocessing-lambda:latest
+```
+⚠️ Make sure that your role or identity has the required permissions to successfully deploy your CloudFormation stack. Required actions: `cloudformation:DescribeStacks`, `s3:CreateBucket`, `s3:ListAllMyBuckets`, `s3:GetBucketLocation`, and `apigateway:POST`.
+
+### 6. Upload the website
+
+⚠️ For this step, you can use your local environment with AWS CLI ([How to install/update AWS CLI?](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)) or a SageMaker notebook instance (`ml.t3.medium` is more than enough). 
+
+⚠️ Copy/download `app.js`, `index.html`, and `styles.css` files from the [current GitHub repo](https://github.com/dashapetr/Computer_Vision_ASL_AWS/tree/main/frontend). They should sit inside the `frontend` directory (same structure as in the repo).
+
+After CloudFormation finishes, retrieve the bucket:
+```
+aws cloudformation describe-stacks \
+    --stack-name asl-recognizer \
+    --query \
+    "Stacks[0].Outputs[?OutputKey=='FrontendBucket'].OutputValue" \
+    --output text
+```
+The command will return a bucket name similar to `asl-recognizer-frontend-12000000`. Use this value to upload your website pages from the `frontend` directory to S3:
+```
+aws s3 sync frontend/ s3://asl-recognizer-frontend-12000000/
+```
+After this, retrieve the CloudFront URL:
+```
+aws cloudformation describe-stacks \
+    --stack-name asl-recognizer \
+    --query \
+    "Stacks[0].Outputs[?OutputKey=='WebsiteURL'].OutputValue" \
+    --output text
+```
+You'll get the CloudFront URL (e.g. `https://d1234567890abc.cloudfront.net`). Paste it in the browser to access your application.
+
+### 7. Test the app
+
+The most exciting part begins! Use your phone to take photos and make predictions.
+First, I tried several images from the `asl_alphabet_test` folder, which contains additional images provided alongside the training dataset.
+All three models performed reasonably well, producing the correct class predictions:
+
+![Predicted label for 'C'](images/prediction-test.png)
+
+📖 **For the conclusions, read the [blog post on my website](https://daryapetrashka.com/blog/cv-asl-part-3/), or on [Dev.to](https://dev.to/aws-builders/part-3-your-first-steps-in-computer-vision-on-aws-deploying-models-for-an-asl-recognition-app-14hf), or on [AWS Builder Center](https://builder.aws.com/content/3LjgdHCDGt7TIUEeb7Akq6LUzgi/part-3-your-first-steps-in-computer-vision-on-aws-deploying-models-for-an-asl-recognition-app).**
